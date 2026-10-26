@@ -1,0 +1,7 @@
+seed: 42
+categories: [DSA, Web Development, Machine Learning, Core Computer Science]
+retrieval:
+  method: tfidf_cosine_offline_fallback
+  threshold: 0.08
+  top_k: 5
+optional_embedding_model: sentence-transformers/all-MiniLM-L6-v2

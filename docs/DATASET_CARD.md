@@ -1,0 +1,7 @@
+# Dataset card
+
+**Name:** DoubtLens original synthetic student-technical-question examples. **Origin:** Generated entirely by this repository, not scraped from Stack Exchange or from students. **Source:** `scripts/generate_data.py`. **License:** CC0-1.0 dedication for original synthetic examples only; project source code uses the MIT license. **Size:** 600 generated records, 150 each in DSA, Web Development, Machine Learning, Core Computer Science. **Fields:** question_id, question_text, category, source, source_url, license.
+
+Each question is produced from a set of 30 topical concepts per class and five shared question templates. Source URLs are blank because no third-party sources were consulted. Label assignments are controlled by manually authored concept-to-category lists. Sample generation is deterministic and documents the labeling rules. `prepare` strips whitespace, rejects short/invalid questions and exact duplicates. A fixed stratified 60/20/20 split is written to `data/processed/`.
+
+**Limitations:** Labels are synthetic ground truth assigned by topic grouping, not independently annotated human ground truth. Repeated templates and common surface patterns appear across all splits. This inflates measured performance and is not a real-world generalization or semantic-retrieval benchmark. No human-submitted questions are stored. Avoid use as an educational correctness authority or high-stakes classifier.

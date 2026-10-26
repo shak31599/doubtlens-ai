@@ -1,0 +1,1 @@
+Raw: reserved for properly attributed external data (not included). Samples: deterministic original synthetic records. Processed: fixed train/validation/test and retrieval corpus. No genuine student submissions are included.
