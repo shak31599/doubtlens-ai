@@ -1,5 +1,6 @@
 """Hugging Face Spaces entrypoint. No external API credentials are required."""
 import json, sys
+import numpy as np
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT/'src'))
@@ -23,12 +24,45 @@ def classify(question,model_name):
     models,metrics,index,error=resources()
     if error:return error,{},'',pd.DataFrame()
     try:
-        chosen=metrics['recommended'] if model_name=='Auto (validation winner)' else ('baseline' if model_name=='Word TF-IDF baseline' else 'character')
-        result=predict(question,models[chosen]); score=result['confidence']
-        status='⚠️ Uncertain prediction' if result['uncertain'] else 'Model prediction (not a verified answer)'
-        top=f'### {result["category"]}\n**{status}** · Score: **{score:.1%}** · `{chosen}` model'
-        explanation=influential_terms(question,models[chosen]); expl=', '.join(f'`{term}` ({value:.3f})' for term,value in explanation) or 'No positive token contributions for this example.'
-        return top,result['probabilities'],'Scores are not necessarily calibrated; trained on synthetic examples only.\n\n**Influential TF-IDF features** (associations, not causation): '+expl,pd.DataFrame([{'model':n,'predicted_category':predict(question,m)['category'],'top_score':round(predict(question,m)['confidence'],3)} for n,m in models.items()])
+        if not isinstance(question,str) or len(question.strip())<12:
+            raise ValueError('Please enter a technical question containing at least 12 characters.')
+        names=('baseline','character')
+        predictions={name:predict(question,models[name]) for name in names}
+        labels=list(models['baseline'].classes_)
+        if model_name=='Combined ensemble (recommended)':
+            # Model weights come from validation data, never held-out test results.
+            w=np.array([max(.01,float(metrics[n]['validation_macro_f1'])) for n in names]);w=w/w.sum()
+            probs=sum(w[i]*np.array([predictions[n]['probabilities'][c] for c in labels]) for i,n in enumerate(names))
+            category=labels[int(np.argmax(probs))]
+            confidence=float(np.max(probs))
+            scores=dict(zip(labels,map(float,probs)))
+            details='Weighted average of two independent TF-IDF models (weights from validation F1).'
+        else:
+            chosen=metrics['recommended'] if model_name=='Auto (validation winner)' else ('baseline' if model_name=='Word TF-IDF baseline' else 'character')
+            category=predictions[chosen]['category']
+            confidence=predictions[chosen]['confidence']
+            scores=predictions[chosen]['probabilities']
+            details=f'Using `{chosen}` model.'
+        q=index['vectorizer'].transform([question])
+        max_similarity=float((q @ index['matrix'].T).max()) if q.nnz else 0.0
+        agreement=len({predictions[n]['category'] for n in names})==1
+        warnings=[]
+        if confidence<.55: warnings.append('Low top-category score')
+        if not agreement: warnings.append('Models disagree')
+        if max_similarity<.12: warnings.append('Unfamiliar wording / possible out-of-domain question')
+        status='⚠️ Review recommended' if warnings else 'Model prediction (not a verified answer)'
+        if confidence < .30:
+            category='Uncertain — no reliable category'
+            status='⚠️ Abstaining from a category prediction'
+        top=f'### {category}\n**{status}** · Top score **{confidence:.1%}**'
+        explanations=[]
+        for n in names:
+            terms=influential_terms(question,models[n],count=5)
+            explanations.append(f'**{n.title()} supporting features:** '+(', '.join(f'`{t}`' for t,v in terms) or 'None'))
+        note=details+'\n\n'+('**Warnings:** '+', '.join(warnings)+'.\n\n' if warnings else '')
+        note+=f'Closest training-question cosine similarity: **{max_similarity:.2f}** (not a probability). The model may be wrong even with a high score. Scores are not calibrated. Training examples are synthetic.\n\n'+ '\n\n'.join(explanations)
+        table=pd.DataFrame([{'model':n,'predicted_category':predictions[n]['category'],'top_score':round(predictions[n]['confidence'],3)} for n in names])
+        return top,scores,note,table
     except ValueError as exc:return str(exc),{},'',pd.DataFrame()
 
 def search(question,threshold):
@@ -63,7 +97,7 @@ with gr.Blocks(title='DoubtLens AI — Intelligent Student Question Analysis',cs
     with gr.Tabs():
         with gr.Tab('🧠 Question classifier'):
             question=gr.Textbox(label='Your technical question',placeholder='Why does Dijkstra’s algorithm fail with negative edge weights?',lines=4)
-            selector=gr.Radio(['Auto (validation winner)','Word TF-IDF baseline','Character TF-IDF alternative'],value='Auto (validation winner)',label='Classifier')
+            selector=gr.Radio(['Combined ensemble (recommended)','Auto (validation winner)','Word TF-IDF baseline','Character TF-IDF alternative'],value='Combined ensemble (recommended)',label='Classifier')
             submit=gr.Button('Analyze question',variant='primary')
             headline=gr.Markdown();probabilities=gr.Label(label='Scores by category');explanation=gr.Markdown();comparison=gr.Dataframe(label='Side-by-side prediction comparison')
             submit.click(classify,inputs=[question,selector],outputs=[headline,probabilities,explanation,comparison])
@@ -85,5 +119,5 @@ with gr.Blocks(title='DoubtLens AI — Intelligent Student Question Analysis',cs
             error_button=gr.Button('View real evaluation errors');errors=gr.Dataframe();errnote=gr.Markdown()
             error_button.click(error_analysis,inputs=error_model,outputs=[errors,errnote])
         with gr.Tab('📚 Methodology and limitations'):
-            gr.Markdown('''### How it works\n1. A **word TF-IDF + Logistic Regression** baseline and a **character n-gram TF-IDF + Logistic Regression** alternative train on original synthetic programming questions.\n2. A fixed, stratified 60/20/20 train/validation/test split prevents exact duplicates from crossing splits. The winner is selected on validation only, then evaluated on held-out test questions.\n3. Question search uses **cosine similarity over a TF-IDF training-question index** as a reliable CPU/offline fallback. A separate optional Sentence Transformers module supports true semantic embeddings when its weights are accessible.\n4. Predictions are not ground truth. No human-vetted real-world benchmark, calibration study, or user-traffic evaluation was performed. Synthetic question templates create shared patterns across splits, so test performance may be optimistic.\n5. Scores are **not necessarily calibrated**. Input can be outside the supported categories. Explanations are linear-model token associations, not causal explanations.\n\n**Reproduce:** run `python scripts/train.py` then `pytest -q`. Refer to dataset card, model card, and source repository documentation.''')
+            gr.Markdown('''### How it works\n1. A **word TF-IDF + Logistic Regression** baseline and a **character n-gram TF-IDF + Logistic Regression** alternative train on original synthetic programming questions.\n2. A fixed, stratified 60/20/20 train/validation/test split prevents exact duplicates from crossing splits. The winner is selected on validation only, then evaluated on held-out test questions.\n3. Question search uses **cosine similarity over a TF-IDF training-question index** as a reliable CPU/offline fallback. The classifier also supports a validation-weighted ensemble, not yet proven more accurate on real-world questions. A separate optional Sentence Transformers module supports embeddings when weights are accessible.\n4. Predictions are not ground truth. No human-vetted real-world benchmark, calibration study, or user-traffic evaluation was performed. Synthetic question templates create shared patterns across splits, so test performance may be optimistic.\n5. Scores are **not necessarily calibrated**. Input can be outside the supported categories. Explanations are linear-model token associations, not causal explanations.\n\n**Reproduce:** run `python scripts/train.py` then `pytest -q`. Refer to dataset card, model card, and source repository documentation.''')
 if __name__=='__main__':demo.launch(server_name='0.0.0.0',server_port=7860)
